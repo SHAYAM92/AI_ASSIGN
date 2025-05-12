@@ -1,0 +1,446 @@
+# IMDB Movie Review Sentiment Analysis - Notebook Version
+# This code is optimized for use in Jupyter/Colab notebooks
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+import re
+import string
+import pickle
+import time
+from google.colab import files  # For file upload in Colab
+
+# Download required NLTK resources
+try:
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('corpora/stopwords')
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('punkt')
+    nltk.download('punkt_tab')
+    nltk.download('stopwords')
+    nltk.download('wordnet')
+
+# Cell 1: Upload and Load Dataset
+print("Please upload your IMDB dataset CSV file...")
+uploaded = files.upload()
+
+# Get the filename of the uploaded file
+file_path = list(uploaded.keys())[0] if uploaded else None
+
+# Function to load IMDB dataset
+def load_imdb_data(file_path=None):
+    """
+    Load IMDB dataset from file or use sample data if file path is not provided
+    """
+    if file_path:
+        try:
+            # Try to determine file type and load accordingly
+            if file_path.endswith('.csv'):
+                print(f"Loading CSV file: {file_path}")
+                # Try different encodings if one fails
+                try:
+                    data = pd.read_csv(file_path, encoding='utf-8')
+                except UnicodeDecodeError:
+                    data = pd.read_csv(file_path, encoding='latin-1')
+
+                # Check columns and rename if needed
+                if 'review' not in data.columns and 'sentiment' not in data.columns:
+                    # Try to automatically detect columns
+                    text_columns = [col for col in data.columns if any(word in col.lower()
+                                   for word in ['text', 'review', 'comment', 'content'])]
+
+                    sentiment_columns = [col for col in data.columns if any(word in col.lower()
+                                        for word in ['sentiment', 'label', 'score', 'rating', 'class'])]
+
+                    if text_columns and sentiment_columns:
+                        print(f"Mapping columns: {text_columns[0]} -> 'review', {sentiment_columns[0]} -> 'sentiment'")
+                        data = data.rename(columns={text_columns[0]: 'review', sentiment_columns[0]: 'sentiment'})
+                    else:
+                        print("Could not automatically detect required columns.")
+                        print("Available columns:", data.columns.tolist())
+                        # If no columns detected, assume first column is review, second is sentiment
+                        if len(data.columns) >= 2:
+                            print(f"Assuming: {data.columns[0]} -> 'review', {data.columns[1]} -> 'sentiment'")
+                            data = data.rename(columns={data.columns[0]: 'review', data.columns[1]: 'sentiment'})
+
+                # Ensure sentiment is numeric (0 for negative, 1 for positive)
+                if 'sentiment' in data.columns:
+                    # If sentiment is not numeric, try to convert
+                    if not np.issubdtype(data['sentiment'].dtype, np.number):
+                        # Map text labels to numbers
+                        sentiment_map = {
+                            'positive': 1, 'pos': 1, 'p': 1, '1': 1, 'y': 1, 'yes': 1, 'good': 1, 'true': 1,
+                            'negative': 0, 'neg': 0, 'n': 0, '0': 0, 'no': 0, 'bad': 0, 'false': 0
+                        }
+                        # Convert to lowercase for mapping
+                        data['sentiment'] = data['sentiment'].astype(str).str.lower().map(sentiment_map)
+                        # Fill any missing values with 0
+                        data['sentiment'] = data['sentiment'].fillna(0).astype(int)
+
+                print(f"Successfully loaded data from {file_path} with {len(data)} records")
+                return data
+
+            elif file_path.endswith('.json'):
+                print(f"Loading JSON file: {file_path}")
+                data = pd.read_json(file_path)
+                print(f"Successfully loaded data from {file_path}")
+                return data
+
+            else:
+                # Default to CSV for other file types
+                print(f"Attempting to load file as CSV: {file_path}")
+                data = pd.read_csv(file_path)
+                print(f"Successfully loaded data from {file_path}")
+                return data
+
+        except Exception as e:
+            print(f"Error loading file: {e}")
+            print("Using sample data instead.")
+
+    # If no file or error loading, create sample data
+    print("Creating sample IMDB review data...")
+
+    # Create a small sample dataset for demonstration
+    sample_reviews = [
+        "This movie was fantastic! I loved every minute of it.",
+        "Terrible acting and a predictable plot. Don't waste your time.",
+        "The best film I've seen all year. Incredible performances.",
+        "Boring and unimaginative. I fell asleep halfway through.",
+        "A masterpiece of modern cinema. Simply breathtaking.",
+        "Awful dialogue and poor direction. Very disappointing.",
+        "I was on the edge of my seat the whole time. Amazing!",
+        "The script was weak and the characters underdeveloped.",
+        "Brilliant cinematography and a powerful story. Must see!",
+        "Waste of money. One of the worst movies ever made."
+    ]
+
+    # Assign labels (1 for positive, 0 for negative)
+    sample_labels = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+
+    # Create DataFrame
+    sample_data = pd.DataFrame({
+        'review': sample_reviews,
+        'sentiment': sample_labels
+    })
+
+    return sample_data
+
+# Load data
+data = load_imdb_data(file_path)
+print(f"Loaded dataset with {len(data)} reviews")
+
+# Display sample of the data
+print("\nSample of the dataset:")
+display(data.head())
+
+# Cell 2: Explore Data
+
+# Show basic statistics
+if 'sentiment' in data.columns:
+    print("\nSentiment distribution:")
+    sentiment_counts = data['sentiment'].value_counts()
+    print(sentiment_counts)
+
+    # Calculate sentiment ratio
+    total = sentiment_counts.sum()
+    positive_ratio = sentiment_counts.get(1, 0) / total * 100
+    negative_ratio = sentiment_counts.get(0, 0) / total * 100
+    print(f"Positive reviews: {positive_ratio:.2f}%")
+    print(f"Negative reviews: {negative_ratio:.2f}%")
+
+# Visualize sentiment distribution
+plt.figure(figsize=(8, 5))
+sns.countplot(x='sentiment', data=data, palette=['red', 'green'])
+plt.title('Sentiment Distribution')
+plt.xlabel('Sentiment (0=Negative, 1=Positive)')
+plt.ylabel('Count')
+plt.show()
+
+# Check for missing values
+missing_values = data.isnull().sum()
+if missing_values.sum() > 0:
+    print("\nMissing values in dataset:")
+    print(missing_values)
+
+    # Handle missing values
+    print("Handling missing values...")
+    if 'review' in data.columns:
+        # Fill missing reviews with empty string
+        data['review'] = data['review'].fillna('')
+    if 'sentiment' in data.columns:
+        # For sentiment, we can either drop or impute
+        # Here we'll drop rows with missing sentiment
+        data = data.dropna(subset=['sentiment'])
+        print(f"Dataset size after handling missing values: {len(data)}")
+
+# Cell 3: Text Preprocessing
+
+# Text preprocessing functions
+def clean_text(text):
+    """
+    Clean and preprocess text by removing HTML tags, special characters,
+    converting to lowercase, removing stopwords and lemmatizing
+    """
+    # Ensure text is a string
+    if not isinstance(text, str):
+        text = str(text)
+
+    # Remove HTML tags
+    text = re.sub(r'<.*?>', '', text)
+
+    # Convert to lowercase
+    text = text.lower()
+
+    # Remove punctuation
+    text = ''.join([char for char in text if char not in string.punctuation])
+
+    # Tokenize
+    tokens = nltk.word_tokenize(text)
+
+    # Remove stopwords
+    stop_words = set(stopwords.words('english'))
+    tokens = [token for token in tokens if token not in stop_words]
+
+    # Lemmatize
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(token) for token in tokens]
+
+    # Join tokens back into text
+    cleaned_text = ' '.join(tokens)
+
+    return cleaned_text
+
+# Process the data
+print("Preprocessing text data...")
+start_time = time.time()
+data['cleaned_review'] = data['review'].apply(clean_text)
+print(f"Preprocessing completed in {time.time() - start_time:.2f} seconds")
+
+# Show a sample of original vs cleaned text
+sample_comparison = pd.DataFrame({
+    'Original Review': data['review'].head(),
+    'Cleaned Review': data['cleaned_review'].head()
+})
+display(sample_comparison)
+
+# Cell 4: Train-Test Split and Model Training
+
+# Check if dataset is too large - if so, sample it
+sample_size = None  # Change this to a number if you want to sample
+if sample_size and sample_size < len(data):
+    print(f"Sampling {sample_size} reviews from the dataset...")
+    data = data.sample(n=sample_size, random_state=42)
+    print(f"Working with sampled dataset of {len(data)} reviews")
+
+# Split data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(
+    data['cleaned_review'],
+    data['sentiment'],
+    test_size=0.2,
+    random_state=42
+)
+
+print(f"Training set size: {len(X_train)}")
+print(f"Testing set size: {len(X_test)}")
+
+# Feature extraction with TF-IDF
+print("Transforming text to TF-IDF features...")
+vectorizer = TfidfVectorizer(max_features=5000)
+X_train_tfidf = vectorizer.fit_transform(X_train)
+X_test_tfidf = vectorizer.transform(X_test)
+
+# Train model
+print("Training logistic regression model...")
+start_time = time.time()
+model = LogisticRegression(max_iter=1000, random_state=42)
+model.fit(X_train_tfidf, y_train)
+print(f"Model training completed in {time.time() - start_time:.2f} seconds")
+
+# Cell 5: Model Evaluation
+
+# Evaluate model performance
+print("Evaluating model performance...")
+y_pred = model.predict(X_test_tfidf)
+
+# Calculate accuracy
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Accuracy: {accuracy:.4f}")
+
+# Print classification report
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=['Negative', 'Positive']))
+
+# Create confusion matrix
+cm = confusion_matrix(y_test, y_pred)
+
+# Plot confusion matrix
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['Negative', 'Positive'],
+            yticklabels=['Negative', 'Positive'])
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.tight_layout()
+plt.show()
+
+# Cell 6: Feature Importance Analysis
+
+# Get feature names
+feature_names = vectorizer.get_feature_names_out()
+
+# Get coefficients from model
+coef = model.coef_[0]
+
+# Create DataFrame with words and their coefficients
+word_importance = pd.DataFrame({
+    'Word': feature_names,
+    'Importance': coef
+})
+
+# Sort by absolute importance
+word_importance['Abs_Importance'] = word_importance['Importance'].abs()
+word_importance = word_importance.sort_values('Abs_Importance', ascending=False)
+
+# Get top positive and negative words
+top_n = 20
+top_positive = word_importance[word_importance['Importance'] > 0].head(top_n)
+top_negative = word_importance[word_importance['Importance'] < 0].head(top_n)
+
+# Plot
+plt.figure(figsize=(12, 10))
+
+plt.subplot(2, 1, 1)
+sns.barplot(x='Importance', y='Word', data=top_positive.sort_values('Importance'), palette='YlGn')
+plt.title(f'Top {top_n} Words for Positive Sentiment')
+plt.tight_layout()
+
+plt.subplot(2, 1, 2)
+sns.barplot(x='Importance', y='Word', data=top_negative.sort_values('Importance'), palette='OrRd')
+plt.title(f'Top {top_n} Words for Negative Sentiment')
+plt.tight_layout()
+
+plt.subplots_adjust(hspace=0.3)
+plt.show()
+
+# Cell 7: Testing with New Reviews
+
+# Function to predict sentiment
+def predict_sentiment(text, vectorizer, model):
+    # Clean the text
+    cleaned = clean_text(text)
+
+    # Transform to TF-IDF
+    text_tfidf = vectorizer.transform([cleaned])
+
+    # Predict
+    prediction = model.predict(text_tfidf)[0]
+    probability = model.predict_proba(text_tfidf)[0]
+
+    sentiment = "Positive" if prediction == 1 else "Negative"
+    confidence = probability[1] if prediction == 1 else probability[0]
+
+    return {
+        'sentiment': sentiment,
+        'confidence': confidence,
+        'prediction': prediction
+    }
+
+# Test with some new reviews
+test_reviews = [
+    "This movie was absolutely fantastic, the acting was superb!",
+    "What a waste of time, terrible movie with awful acting.",
+    "A decent film but it could have been better in some parts."
+]
+
+print("\nTesting with new reviews:")
+for review in test_reviews:
+    result = predict_sentiment(review, vectorizer, model)
+    print(f"\nReview: {review}")
+    print(f"Sentiment: {result['sentiment']} (Confidence: {result['confidence']:.4f})")
+
+# Cell 8: Save the Model
+
+# Save the model and vectorizer
+print("\nSaving model and vectorizer...")
+save_path = "imdb_sentiment_model.pkl"
+
+try:
+    with open(save_path, 'wb') as f:
+        pickle.dump({'vectorizer': vectorizer, 'model': model}, f)
+    print(f"Model saved to {save_path}")
+
+    # Also offer download option in Colab
+    try:
+        from google.colab import files
+        files.download(save_path)
+        print("Download initiated. Check your browser downloads.")
+    except:
+        print("Model saved but download not available (not running in Colab).")
+except Exception as e:
+    print(f"Error saving model: {e}")
+
+# Cell 9: Interactive Testing (Optional)
+
+# Uncomment and run this cell for interactive testing
+from IPython.display import HTML, display
+import ipywidgets as widgets
+
+def analyze_review(review_text):
+    if not review_text.strip():
+        return "Please enter a review to analyze."
+
+    result = predict_sentiment(review_text, vectorizer, model)
+
+    # Create a color based on sentiment (green for positive, red for negative)
+    color = "green" if result['sentiment'] == "Positive" else "red"
+
+    # Format output with styling
+    output = f"<div style='padding:10px; border-left:5px solid {color}; background-color:#f8f8f8;'>"
+    output += f"<h3 style='color:{color}'>Sentiment: {result['sentiment']}</h3>"
+    output += f"<p>Confidence: {result['confidence']:.4f}</p>"
+    output += "</div>"
+
+    return output
+
+# Create input text area
+text_input = widgets.Textarea(
+    value='',
+    placeholder='Enter a movie review to analyze',
+    description='Review:',
+    disabled=False,
+    layout=widgets.Layout(width='100%', height='100px')
+)
+
+# Create button
+button = widgets.Button(
+    description='Analyze Sentiment',
+    button_style='primary',
+    tooltip='Click to analyze sentiment',
+    icon='check'
+)
+
+# Create output area
+output = widgets.Output()
+
+# Define button click handler
+def on_button_clicked(b):
+    with output:
+        output.clear_output()
+        display(HTML(analyze_review(text_input.value)))
+
+button.on_click(on_button_clicked)
+
+# Display the widgets
+display(text_input)
+display(button)
+display(output)
